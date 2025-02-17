@@ -4,7 +4,8 @@ import numpy as np
 import soundfile as sf
 from datetime import datetime
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
-                           QHBoxLayout, QPushButton, QLabel, QLineEdit, QFrame)
+                           QHBoxLayout, QPushButton, QLabel, QLineEdit, QFrame,
+                           QSizePolicy)
 from PyQt6.QtCore import Qt
 import pyqtgraph as pg
 from pyqtgraph import exporters
@@ -15,6 +16,8 @@ class AudioProcessorApp(QMainWindow):
         super().__init__()
         self.setWindowTitle("JaDe Audio Processor")
         self._updating = False  # Add flag to prevent recursive updates
+        self.manual_peak_mode = False
+        self.peak_removal_mode = False
         self.setStyleSheet("""
             QMainWindow {
                 background-color: #f0f0f0;
@@ -58,9 +61,10 @@ class AudioProcessorApp(QMainWindow):
         control_panel = self.create_control_panel()
         layout.addWidget(control_panel)
         
-        # Create plots panel
+        # Create plots panel with size policy
         plots_panel = self.create_plots_panel()
-        layout.addWidget(plots_panel, stretch=1)
+        plots_panel.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        layout.addWidget(plots_panel, stretch=4)  # Give plots even more space compared to control panel
         
         # Set window size
         self.resize(1200, 800)
@@ -132,6 +136,15 @@ class AudioProcessorApp(QMainWindow):
         process_all_btn.clicked.connect(self.process_all_files)
         actions_layout.addWidget(process_all_btn)
         
+        # Add manual peak buttons
+        add_peak_btn = QPushButton("Manually Add Peak")
+        add_peak_btn.clicked.connect(self.toggle_manual_peak_mode)
+        actions_layout.addWidget(add_peak_btn)
+        
+        remove_peak_btn = QPushButton("Remove Peak")
+        remove_peak_btn.clicked.connect(self.toggle_peak_removal_mode)
+        actions_layout.addWidget(remove_peak_btn)
+        
         layout.addWidget(actions_group)
         
         # Navigation buttons
@@ -159,13 +172,27 @@ class AudioProcessorApp(QMainWindow):
     def create_plots_panel(self):
         panel = QFrame()
         layout = QVBoxLayout(panel)
+        layout.setSpacing(10)  # Add spacing between plots
         
-        # Waveform plot
+        # Create wave frame with size policy
+        self.wave_frame = QFrame()
+        self.wave_frame.setFrameStyle(QFrame.Shape.NoFrame)
+        self.wave_frame.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        wave_layout = QVBoxLayout(self.wave_frame)
+        wave_layout.setContentsMargins(2, 2, 2, 2)
+        wave_layout.setSpacing(0)
+        
+        # Set minimum height for wave frame
+        self.wave_frame.setMinimumHeight(400)  # Increase height of wave plot
+        
+        # Create waveform plot
         self.wave_plot = pg.PlotWidget()
         self.wave_plot.setBackground('white')
         self.wave_plot.setLabel('left', 'Amplitude')
         self.wave_plot.setLabel('bottom', 'Time (s)')
         self.wave_plot.showGrid(x=True, y=True)
+        wave_layout.addWidget(self.wave_plot)
+        layout.addWidget(self.wave_frame)
         
         # Add threshold line with enhanced interaction area
         self.threshold_line = pg.InfiniteLine(
@@ -195,16 +222,29 @@ class AudioProcessorApp(QMainWindow):
         # Mouse interaction
         self.wave_plot.scene().sigMouseMoved.connect(self.on_mouse_moved)
         
-        layout.addWidget(self.wave_plot)
+        # Create results frame with size policy
+        self.results_frame = QFrame()
+        self.results_frame.setFrameStyle(QFrame.Shape.NoFrame)
+        self.results_frame.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        results_layout = QVBoxLayout(self.results_frame)
+        results_layout.setContentsMargins(2, 2, 2, 2)
+        results_layout.setSpacing(0)
         
-        # Results plot
+        # Set minimum height for results frame
+        self.results_frame.setMinimumHeight(250)  # Increase height of results plot
+        
+        # Create results plot
         self.results_plot = pg.PlotWidget()
         self.results_plot.setBackground('white')
         self.results_plot.setLabel('left', 'Interval (ms)')
         self.results_plot.setLabel('bottom', 'Pulse Sequence Number')
         self.results_plot.showGrid(x=True, y=True)
+        results_layout.addWidget(self.results_plot)
+        layout.addWidget(self.results_frame)
         
-        layout.addWidget(self.results_plot)
+        # Add click handlers
+        self.wave_plot.scene().sigMouseClicked.connect(self.on_wave_plot_clicked)
+        self.results_plot.scene().sigMouseClicked.connect(self.on_results_plot_clicked)
         
         return panel
     
@@ -279,8 +319,17 @@ class AudioProcessorApp(QMainWindow):
         # Plot peaks and min_distance regions
         for peak_idx in self.peaks:
             peak_time = peak_idx / self.sample_rate
-            # Vertical line at peak
-            self.wave_plot.addItem(pg.InfiniteLine(peak_time, angle=90, pen=pg.mkPen('r', width=1, alpha=100)))
+            # Vertical dashed line at peak with increased visibility
+            peak_line = pg.InfiniteLine(
+                peak_time, 
+                angle=90, 
+                pen=pg.mkPen(
+                    color='r',
+                    width=3,
+                    style=Qt.PenStyle.DashLine
+                )
+            )
+            self.wave_plot.addItem(peak_line)
             # Shaded region
             end_time = min(peak_time + self.min_distance/self.sample_rate, time[-1])
             region = pg.LinearRegionItem([peak_time, end_time], movable=False, brush=pg.mkBrush(255, 0, 0, 30))
@@ -388,6 +437,90 @@ class AudioProcessorApp(QMainWindow):
         if self.current_file_idx > 0:
             self.current_file_idx -= 1
             self.load_wav_file(self.wav_files[self.current_file_idx])
+    
+    def toggle_manual_peak_mode(self):
+        """Toggle manual peak addition mode and update UI accordingly"""
+        self.manual_peak_mode = not self.manual_peak_mode
+        self.peak_removal_mode = False  # Ensure only one mode is active
+        
+        # Update frame styles
+        if self.manual_peak_mode:
+            self.wave_frame.setFrameStyle(QFrame.Shape.Box)
+            self.wave_frame.setLineWidth(2)
+            self.wave_frame.setStyleSheet("QFrame { border: 2px solid #00FF00; }")
+            self.results_frame.setFrameStyle(QFrame.Shape.NoFrame)
+            self.results_frame.setStyleSheet("")
+            self.status_label.setText("Click on the waveform to add a peak")
+        else:
+            self.wave_frame.setFrameStyle(QFrame.Shape.NoFrame)
+            self.wave_frame.setStyleSheet("")
+            self.status_label.setText("")
+    
+    def toggle_peak_removal_mode(self):
+        """Toggle peak removal mode and update UI accordingly"""
+        self.peak_removal_mode = not self.peak_removal_mode
+        self.manual_peak_mode = False  # Ensure only one mode is active
+        
+        # Update frame styles
+        if self.peak_removal_mode:
+            self.results_frame.setFrameStyle(QFrame.Shape.Box)
+            self.results_frame.setLineWidth(2)
+            self.results_frame.setStyleSheet("QFrame { border: 2px solid #00FF00; }")
+            self.wave_frame.setFrameStyle(QFrame.Shape.NoFrame)
+            self.wave_frame.setStyleSheet("")
+            self.status_label.setText("Click on a peak to remove it")
+        else:
+            self.results_frame.setFrameStyle(QFrame.Shape.NoFrame)
+            self.results_frame.setStyleSheet("")
+            self.status_label.setText("")
+    
+    def on_wave_plot_clicked(self, event):
+        """Handle clicks on the waveform plot"""
+        if not self.manual_peak_mode:
+            return
+            
+        # Get click position in plot coordinates
+        pos = event.scenePos()
+        mouse_point = self.wave_plot.plotItem.vb.mapSceneToView(pos)
+        click_time = mouse_point.x()
+        
+        # Convert time to sample index
+        click_sample = int(click_time * self.sample_rate)
+        
+        # Add new peak
+        if 0 <= click_sample < len(self.data):
+            # Insert the new peak in sorted order
+            self.peaks = np.sort(np.append(self.peaks, click_sample))
+            # Update pulse times and intervals
+            self.pulse_times = self.peaks / self.sample_rate
+            self.intervals = np.diff(self.pulse_times) * 1000
+            # Update displays
+            self.update_displays()
+            
+        # Exit manual peak mode
+        self.toggle_manual_peak_mode()
+    
+    def on_results_plot_clicked(self, event):
+        """Handle clicks on the results plot"""
+        if not self.peak_removal_mode:
+            return
+            
+        # Get click position in plot coordinates
+        pos = event.scenePos()
+        mouse_point = self.results_plot.plotItem.vb.mapSceneToView(pos)
+        click_index = int(round(mouse_point.x()))
+        
+        # Remove peak if valid index
+        if 0 <= click_index < len(self.peaks) - 1:  # -1 because intervals has one less point than peaks
+            self.peaks = np.delete(self.peaks, click_index)  # Remove the clicked peak directly
+            # Update pulse times and intervals
+            self.pulse_times = self.peaks / self.sample_rate
+            self.intervals = np.diff(self.pulse_times) * 1000
+            # Update displays
+            self.update_displays()
+            
+        # Exit peak removal mode
+        self.toggle_peak_removal_mode()
 
 
 if __name__ == '__main__':
