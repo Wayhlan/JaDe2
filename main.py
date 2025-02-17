@@ -14,6 +14,7 @@ class AudioProcessorApp(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("JaDe Audio Processor")
+        self._updating = False  # Add flag to prevent recursive updates
         self.setStyleSheet("""
             QMainWindow {
                 background-color: #f0f0f0;
@@ -105,14 +106,14 @@ class AudioProcessorApp(QMainWindow):
         
         # Subject name
         subject_layout = QHBoxLayout()
-        self.subject_input = QLineEdit("Printemps")
+        self.subject_input = QLineEdit("Subject")
         subject_layout.addWidget(QLabel("Subject Name:"))
         subject_layout.addWidget(self.subject_input)
         metadata_layout.addLayout(subject_layout)
         
         # Experimenter name
         exp_layout = QHBoxLayout()
-        self.experimenter_input = QLineEdit("Clara")
+        self.experimenter_input = QLineEdit("Experimenter")
         exp_layout.addWidget(QLabel("Experimenter:"))
         exp_layout.addWidget(self.experimenter_input)
         metadata_layout.addLayout(exp_layout)
@@ -166,9 +167,26 @@ class AudioProcessorApp(QMainWindow):
         self.wave_plot.setLabel('bottom', 'Time (s)')
         self.wave_plot.showGrid(x=True, y=True)
         
-        # Add threshold line and cursor
-        self.threshold_line = pg.InfiniteLine(angle=0, movable=True, pen=pg.mkPen('r', width=2))
+        # Add threshold line with enhanced interaction area
+        self.threshold_line = pg.InfiniteLine(
+            angle=0, 
+            movable=True, 
+            pen=pg.mkPen('r', width=2),
+            hoverPen=pg.mkPen('r', width=3),
+            span=(0, 1)  # Make line span full width
+        )
+        # Create a semi-transparent region around the threshold line for easier interaction
+        self.threshold_region = pg.LinearRegionItem(
+            orientation=pg.LinearRegionItem.Horizontal,
+            brush=(255, 0, 0, 30),
+            hoverBrush=(255, 0, 0, 50),
+            movable=True
+        )
+        self.threshold_region.sigRegionChanged.connect(self.on_region_changed)
         self.threshold_line.sigDragged.connect(self.on_threshold_changed)
+        
+        # Add both items to the plot
+        self.wave_plot.addItem(self.threshold_region)
         self.wave_plot.addItem(self.threshold_line)
         
         self.vertical_cursor = pg.InfiniteLine(angle=90, movable=False, pen=pg.mkPen('g', width=1))
@@ -246,8 +264,13 @@ class AudioProcessorApp(QMainWindow):
         # Plot waveform
         self.wave_plot.plot(time, self.data, pen=pg.mkPen('b', width=1))
         
-        # Update threshold line
+        # Update threshold line and region
         self.threshold_line.setValue(self.threshold)
+        self.threshold_region.setRegion([
+            self.threshold - 0.1,  # Height of interaction region
+            self.threshold + 0.1
+        ])
+        self.wave_plot.addItem(self.threshold_region)
         self.wave_plot.addItem(self.threshold_line)
         
         # Add vertical cursor back
@@ -272,9 +295,45 @@ class AudioProcessorApp(QMainWindow):
         mouse_point = self.wave_plot.plotItem.vb.mapSceneToView(pos)
         self.vertical_cursor.setValue(mouse_point.x())
     
+    def on_region_changed(self):
+        """Update threshold line when region is dragged"""
+        if self._updating or not hasattr(self, 'threshold_region'):
+            return
+            
+        try:
+            self._updating = True
+            # Get the middle of the region as the new threshold
+            minY, maxY = self.threshold_region.getRegion()
+            middle = (minY + maxY) / 2
+            self.threshold_line.setValue(middle)
+            self.update_threshold(middle)
+        finally:
+            self._updating = False
+    
     def on_threshold_changed(self):
-        self.threshold = self.threshold_line.value()
+        """Update threshold and region when threshold line is dragged"""
+        if self._updating:
+            return
+            
+        try:
+            self._updating = True
+            new_threshold = self.threshold_line.value()
+            self.update_threshold(new_threshold)
+        finally:
+            self._updating = False
+            
+    def update_threshold(self, new_threshold):
+        """Central method to handle threshold updates"""
+        self.threshold = new_threshold
         self.thresh_input.setText(f"{self.threshold/np.mean(np.abs(self.data)):.2f}")
+        
+        # Update region position if it exists
+        if hasattr(self, 'threshold_region'):
+            region_height = 0.1  # Height of the interaction region
+            self.threshold_region.setRegion([
+                self.threshold - region_height/2,
+                self.threshold + region_height/2
+            ])
         
         # Reprocess with new threshold
         _, _, _, _, self.peaks = self.process_wav_file(
@@ -309,7 +368,7 @@ class AudioProcessorApp(QMainWindow):
         with open(f"{self.base_name}.dat", 'w') as f:
             f.write(f"{self.subject_input.text()}\n")
             timestamp = datetime.now().strftime("%d/%m/%Y   %H:%M")
-            f.write(f"\t{self.experimenter_input.text()}/{self.base_name} recorded with JaDe4 {timestamp}\n\n")
+            f.write(f"\t{self.experimenter_input.text()}/{self.base_name} recorded with JaDe_V2 {timestamp}\n\n")
             for interval in self.intervals:
                 f.write(f"{int(round(interval))}\n")
         
